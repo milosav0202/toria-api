@@ -66,7 +66,12 @@ async def api_key_middleware(request, handler):
             select_username = """
                 SELECT keys.remote_name
                 FROM api_keys as keys
-                WHERE keys.name = %(name)s AND keys.key = %(key)s
+                WHERE 
+                  NOT keys.disabled
+                AND
+                  keys.name = %(name)s 
+                AND 
+                  keys.key = %(key)s
             """
             await cursor.execute(select_username, {
                 "name": str(request.headers["username"]),
