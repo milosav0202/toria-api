@@ -77,29 +77,6 @@ async def index(request):
     })
 
 
-@routes.get("/send_email")
-async def readings_get(request):
-    send_email = request.app['send_email']
-
-    message = MIMEMultipart()
-    message['From'] = 'root@localhost'
-    message['To'] = 'somebody@example.com'
-    message['Subject'] = 'Hello World!'
-
-    message.attach(MIMEText('Sent via aiosmtplib'))
-    part = MIMEApplication(
-        b'12345 hello',
-        Name='hello.txt',
-    )
-    part['Content-Disposition'] = f'attachment; filename="hello.txt"'
-    message.attach(part)
-
-    await send_email(message)
-    return web.json_response({
-        "data": "Success"
-    })
-
-
 @routes.post("/readings/get")
 async def readings_get(request):
     meter_alias = 'm'
