@@ -1,5 +1,6 @@
 import asyncio
 import datetime
+
 import aiopg
 from aiohttp import web
 
@@ -10,6 +11,7 @@ routes = web.RouteTableDef()
 
 @routes.post("/")
 async def index(request):
+    # noinspection SqlResolve
     select_query = """
         SELECT
         m.id,
@@ -40,18 +42,131 @@ async def index(request):
     async with request.app["remote_db"].acquire() as conn:
         async with conn.cursor() as cursor:
             await cursor.execute(select_query, parameters)
-            async for row in cursor:
+            async for meter_id, name, date, import_total_wh, import_total in cursor:
                 response.append({
-                    "id": row[0],
-                    "name": row[1],
-                    "date": row[2].strftime("%Y-%m-%d"),
-                    "import_total_wh": row[3],
-                    "import_total": row[4]
+                    "id": meter_id,
+                    "name": name,
+                    "date": date.strftime("%Y-%m-%d"),
+                    "import_total_wh": import_total_wh,
+                    "import_total": import_total
                 })
+
+    await access_logging(request)
+    return web.json_response({
+        "data": response
+    })
+
+
+@routes.post("/readings/get")
+async def readings_get(request):
+    meter_alias = 'm'
+    reading_alias = 'r'
+
+    # always included in each request
+    both_names = [
+        f'{meter_alias}.name',
+        f'{meter_alias}.mpan',
+        f'{meter_alias}.location',
+        f'{reading_alias}.date'
+    ]
+
+    # IMPORT READINGS
+    import_names = [reading_alias + '.' + name for name in (
+        'import_total_wh', 'import_total',
+        'import0030', 'import0100', 'import0130', 'import0200', 'import0230', 'import0300', 'import0330', 'import0400',
+        'import0430', 'import0500', 'import0530', 'import0600', 'import0630', 'import0700', 'import0730', 'import0800',
+        'import0830', 'import0900', 'import0930', 'import1000', 'import1030', 'import1100', 'import1130', 'import1200',
+        'import1230', 'import1300', 'import1330', 'import1400', 'import1430', 'import1500', 'import1530', 'import1600',
+        'import1630', 'import1700', 'import1730', 'import1800', 'import1830', 'import1900', 'import1930', 'import2000',
+        'import2030', 'import2100', 'import2130', 'import2200', 'import2230', 'import2300', 'import2330', 'import0000',
+    )]
+
+    # EXPORT READINGS
+    export_names = [reading_alias + '.' + name for name in (
+        'export_total_wh', 'export_total',
+        'export0030', 'export0100', 'export0130', 'export0200', 'export0230', 'export0300', 'export0330', 'export0400',
+        'export0430', 'export0500', 'export0530', 'export0600', 'export0630', 'export0700', 'export0730', 'export0800',
+        'export0830', 'export0900', 'export0930', 'export1000', 'export1030', 'export1100', 'export1130', 'export1200',
+        'export1230', 'export1300', 'export1330', 'export1400', 'export1430', 'export1500', 'export1530', 'export1600',
+        'export1630', 'export1700', 'export1730', 'export1800', 'export1830', 'export1900', 'export1930', 'export2000',
+        'export2030', 'export2100', 'export2130', 'export2200', 'export2230', 'export2300', 'export2330', 'export0000'
+    )]
+
+    # Rename table column name here
+    rename_dict = {
+        f'{meter_alias}.name': 'name',
+        f'{meter_alias}.mpan': 'reference',
+        f'{meter_alias}.location': 'description',
+        f'{reading_alias}.import_total': 'day_total_wh',
+        f'{reading_alias}.export_total': 'export_day_total_wh'
+    }
+
+    post_body = await request.post()
+    include_imports = bool(post_body.get('import_reads', False))
+    include_exports = bool(post_body.get('export_reads', False))
+
+    if not include_imports and not include_exports:
+        return web.json_response({
+            "error": "Both import_reads and export_reads are false"
+        })
+
+    select_names = []
+    select_names.extend(both_names)
+
+    if include_imports:
+        select_names.extend(import_names)
+
+    if include_exports:
+        select_names.extend(export_names)
+
+    select_query = (f"""
+        SELECT { ','.join(select_names) }
+        FROM readings_reading AS {reading_alias}
+        INNER JOIN meters_meter AS {meter_alias} ON {meter_alias}.id = {reading_alias}.meter_id
+        WHERE {reading_alias}.meter_id IN
+        (SELECT meter_id FROM users_profile_meters WHERE profile_id =
+        (SELECT id FROM auth_user WHERE username = %(username)s)) 
+        AND date >= %(fromdate)s AND date <= %(todate)s; 
+    """)
+
+    parameters = {
+        'fromdate': post_body["fromdate"],
+        'todate': post_body['todate'],
+        'username': request['username']
+    }
+
+    response = []
+    async with request.app["remote_db"].acquire() as conn:
+        async with conn.cursor() as cursor:
+            await cursor.execute(select_query, parameters)
+            async for selected_row in cursor:
+                response_row = {}
+                for selected_column, value in zip(select_names, selected_row):
+                    response_name = rename_dict.get(selected_column) or selected_column.replace(f'{reading_alias}.', '')
+
+                    # Because date and datetime is not json serializable
+                    if isinstance(value, (datetime.date, datetime.datetime)):
+                        value = value.strftime("%Y-%m-%d")
+
+                    response_row[response_name] = value
+                response.append(response_row)
 
     return web.json_response({
         "data": response
     })
+
+
+async def access_logging(request):
+    async with request.app["local_db"].acquire() as conn:
+        async with conn.cursor() as cursor:
+            request_log = """
+                 INSERT INTO request_log (datetime, name) 
+                     VALUES (%(datetime)s, %(name)s)
+             """
+            await cursor.execute(request_log, {
+                "datetime": datetime.datetime.now(),
+                "name": request.headers["username"]
+            })
 
 
 @web.middleware
@@ -77,24 +192,13 @@ async def api_key_middleware(request, handler):
                 "name": str(request.headers["username"]),
                 "key": str(request.headers["api-key"])
             })
-            for remote_name, in cursor:
+            async for remote_name, in cursor:
                 request["username"] = remote_name
 
     if "username" not in request:
         return web.json_response({
             "error": "You provide wrong 'username' or 'api-key' headers"
         })
-
-    async with request.app["local_db"].acquire() as conn:
-        async with conn.cursor() as cursor:
-            request_log = """
-                INSERT INTO request_log (datetime, name) 
-                    VALUES (%(datetime)s, %(name)s)
-            """
-            await cursor.execute(request_log, {
-                "datetime": datetime.datetime.now(),
-                "name": request.headers["username"]
-            })
 
     return await handler(request)
 
