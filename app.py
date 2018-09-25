@@ -32,6 +32,17 @@ async def index(request):
     """
 
     post_body = await request.post()
+
+    if 'date' not in post_body:
+        return web.json_response({
+            "error": "Body must contains 'date' (DATE) field"
+        })
+
+    if 'meters' not in post_body:
+        return web.json_response({
+            "error": "Body must contains at least one 'meters' (STRING) field"
+        })
+
     parameters = {
         'username': request["username"],
         'date': post_body['date'],
@@ -128,6 +139,16 @@ async def readings_get(request):
         (SELECT id FROM auth_user WHERE username = %(username)s)) 
         AND date >= %(fromdate)s AND date <= %(todate)s; 
     """)
+
+    if "fromdate" not in post_body:
+        return web.json_response({
+            "error": "Body must contains 'fromdate' (DATE) field"
+        })
+
+    if "todate" not in post_body:
+        return web.json_response({
+            "error": "Body must contains 'todate' (DATE) field"
+        })
 
     parameters = {
         'fromdate': post_body["fromdate"],
