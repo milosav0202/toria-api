@@ -1,3 +1,12 @@
+import csv
+import random
+from io import StringIO
+
+import aiosmtplib
+from email.mime.text import MIMEText
+from email.mime.application import MIMEApplication
+from email.mime.multipart import MIMEMultipart
+
 import asyncio
 import datetime
 
@@ -65,6 +74,29 @@ async def index(request):
     await access_logging(request)
     return web.json_response({
         "data": response
+    })
+
+
+@routes.get("/send_email")
+async def readings_get(request):
+    send_email = request.app['send_email']
+
+    message = MIMEMultipart()
+    message['From'] = 'root@localhost'
+    message['To'] = 'somebody@example.com'
+    message['Subject'] = 'Hello World!'
+
+    message.attach(MIMEText('Sent via aiosmtplib'))
+    part = MIMEApplication(
+        b'12345 hello',
+        Name='hello.txt',
+    )
+    part['Content-Disposition'] = f'attachment; filename="hello.txt"'
+    message.attach(part)
+
+    await send_email(message)
+    return web.json_response({
+        "data": "Success"
     })
 
 
@@ -150,30 +182,58 @@ async def readings_get(request):
             "error": "Body must contains 'todate' (DATE) field"
         })
 
+    if "receiver_email" not in post_body:
+        return web.json_response({
+            "error": "Body must contains 'receiver_email' (STRING) field"
+        })
+
     parameters = {
         'fromdate': post_body["fromdate"],
         'todate': post_body['todate'],
         'username': request['username']
     }
 
-    response = []
+    csv_response = StringIO()
+    writer = csv.DictWriter(csv_response, select_names)
+    writer.writerow({
+        selected_column: (rename_dict.get(selected_column) or selected_column.replace(f'{reading_alias}.', ''))
+        for selected_column in select_names
+    })
+
     async with request.app["remote_db"].acquire() as conn:
         async with conn.cursor() as cursor:
             await cursor.execute(select_query, parameters)
             async for selected_row in cursor:
                 response_row = {}
                 for selected_column, value in zip(select_names, selected_row):
-                    response_name = rename_dict.get(selected_column) or selected_column.replace(f'{reading_alias}.', '')
-
-                    # Because date and datetime is not json serializable
                     if isinstance(value, (datetime.date, datetime.datetime)):
                         value = value.strftime("%Y-%m-%d")
+                    response_row[selected_column] = value
+                writer.writerow(response_row)
 
-                    response_row[response_name] = value
-                response.append(response_row)
+    csv_response.seek(0)
 
+    send_email = request.app['send_email']
+
+    message = MIMEMultipart()
+    message['From'] = post_body.get('sender_email', config.SMTP_SENDER)
+    message['To'] = post_body['receiver_email']
+    message['Subject'] = post_body.get('message_subject', 'readings')
+
+    if 'message_content' in post_body:
+        message.attach(MIMEText(post_body['message_content']))
+
+    filename = post_body.get('filename', 'readings.csv')
+    part = MIMEApplication(
+        csv_response.read().encode(),
+        Name=filename
+    )
+    part['Content-Disposition'] = f'attachment; filename="{filename}"'
+    message.attach(part)
+
+    await send_email(message)
     return web.json_response({
-        "data": response
+        "data": "success"
     })
 
 
@@ -232,6 +292,38 @@ async def pg_pool(app):
             yield  # <!> Do not remove this yield.
 
 
+async def smtp_pool(app):
+    semaphore = asyncio.Semaphore(value=1)
+    connection_pool = []
+
+    async def connect():
+        smtp = aiosmtplib.SMTP(hostname=config.SMTP_HOST, port=config.SMTP_PORT)
+        await smtp.connect()
+        await smtp.login(username=config.SMTP_USERNAME, password=config.SMTP_PASSWORD)
+        connection_pool.append(smtp)
+
+    async def send_message(message, **kwargs):
+        for _ in range(config.SMTP_SENDING_ATTEMPTS):
+            async with semaphore:
+                while len(connection_pool) < config.SMTP_CONNECTIONS:
+                    await connect()
+
+            smtp = connection_pool.pop(random.randint(0, config.SMTP_CONNECTIONS - 1))
+            try:
+                await smtp.send_message(message, config.SMTP_SENDER, **kwargs)
+                connection_pool.append(smtp)
+                return
+            except aiosmtplib.SMTPException as ex:
+                print(type(ex), ex)
+
+    app['send_email'] = send_message
+
+    yield  # <!> Do not remove this yield.
+
+    for connection in connection_pool:
+        connection.close()
+
+
 async def api_app():
     app = web.Application(
         middlewares=[
@@ -239,6 +331,7 @@ async def api_app():
         ]
     )
     app.cleanup_ctx.append(pg_pool)
+    app.cleanup_ctx.append(smtp_pool)
     app.add_routes(routes)
     return app
 

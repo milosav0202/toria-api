@@ -1,27 +1,16 @@
 REMOTE_DATABASE = "**************************"
 LOCAL_DATABASE = "**************************"
 
-# Ensure that table api_keys is created!
-# CREATE TABLE api_keys (
-#     id SERIAL PRIMARY KEY,
-#     comment TEXT,
-#     disabled BOOLEAN,
-#     key VARCHAR(256),
-#     name VARCHAR(128),
-#     remote_name VARCHAR(128),
-#     UNIQUE (key, name, remote_name)
-# );
+SMTP_HOST = 'smtp.mailtrap.io'
+SMTP_PORT = 2525
 
-# <!> Ensure that table request_log is created!
-# CREATE TABLE request_log (
-#     id SERIAL PRIMARY KEY,
-#     datetime TIMESTAMP,
-#     name VARCHAR(128)
-# );
+SMTP_SENDER = 'noreply@rhinoda.com'
+SMTP_USERNAME = "f23b91b182122a"
+SMTP_PASSWORD = "25463637b5f48b"
+SMTP_CONNECTIONS = 1
+SMTP_SENDING_ATTEMPTS = 5
 
-# noinspection PyBroadException
 try:
     from config_production import *
 except Exception:
     pass
-
