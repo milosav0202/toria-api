@@ -1,11 +1,10 @@
 import csv
+import json
 import random
+import urllib.parse
 from io import StringIO
 
 import aiosmtplib
-from email.mime.text import MIMEText
-from email.mime.application import MIMEApplication
-from email.mime.multipart import MIMEMultipart
 
 import asyncio
 import datetime
@@ -14,11 +13,81 @@ import aiopg
 from aiohttp import web
 
 import config
+import pyaes
+import hashlib
+import base64
 
 routes = web.RouteTableDef()
 
 
+async def get_remote_name(local_db, username, api_key):
+    async with local_db.acquire() as conn:
+        async with conn.cursor() as cursor:
+            select_username = """
+                SELECT keys.remote_name
+                FROM api_keys as keys
+                WHERE 
+                  NOT keys.disabled
+                AND
+                  keys.name = %(name)s 
+                AND 
+                  keys.key = %(key)s
+            """
+            await cursor.execute(select_username, {
+                "name": str(username),
+                "key": str(api_key)
+            })
+            async for remote_name, in cursor:
+                return remote_name
+
+        raise PermissionError("Wrong 'username' or 'api-key'")
+
+
+def api_key_headers(async_handler):
+    async def async_wrapper(request):
+        if "username" not in request.headers or "api-key" not in request.headers:
+            return web.json_response({
+                "error": "You must provide 'username' and 'api-key' http headers"
+            })
+
+        try:
+            request["username"] = await get_remote_name(
+                local_db=request.app['local_db'],
+                username=str(request.headers["username"]),
+                api_key=str(request.headers["api-key"])
+            )
+
+        except PermissionError:
+            return web.json_response({
+                "error": "You provide wrong 'username' or 'api-key' headers"
+            })
+
+        return await async_handler(request)
+    return async_wrapper
+
+
+def access_logging(async_handler):
+    async def async_wrapper(request):
+        async with request.app["local_db"].acquire() as conn:
+            async with conn.cursor() as cursor:
+                response = await async_handler()
+
+                request_log = """
+                     INSERT INTO request_log (datetime, name) 
+                         VALUES (%(datetime)s, %(name)s)
+                 """
+                await cursor.execute(request_log, {
+                    "datetime": datetime.datetime.now(),
+                    "name": request.headers["username"]
+                })
+
+                return response
+    return async_wrapper
+
+
 @routes.post("/")
+@api_key_headers
+@access_logging
 async def index(request):
     # noinspection SqlResolve
     select_query = """
@@ -71,14 +140,82 @@ async def index(request):
                     "import_total": import_total
                 })
 
-    await access_logging(request)
     return web.json_response({
         "data": response
     })
 
 
+def encode_arguments(**arguments):
+    aes = pyaes.AESModeOfOperationCTR(hashlib.sha256(config.SECRET_KEY.encode()).digest())
+    raw_encoded = aes.encrypt(json.dumps(arguments).encode())
+    return urllib.parse.quote(base64.b64encode(raw_encoded).decode())
+
+
+def decode_arguments(encoded):
+    # noinspection PyBroadException
+    try:
+        raw_encoded = base64.b64decode(urllib.parse.unquote(encoded).encode())
+        aes = pyaes.AESModeOfOperationCTR(hashlib.sha256(config.SECRET_KEY.encode()).digest())
+        return json.loads(aes.decrypt(raw_encoded).decode())
+    except Exception:
+        raise ValueError("Failed to decode arguments")
+
+
 @routes.post("/readings/get")
+@api_key_headers
 async def readings_get(request):
+    post_body = await request.post()
+    include_imports = bool(post_body.get('import_reads', False))
+    include_exports = bool(post_body.get('export_reads', False))
+
+    if not include_imports and not include_exports:
+        return web.json_response({
+            "error": "Both import_reads and export_reads are false"
+        })
+
+    if "fromdate" not in post_body:
+        return web.json_response({
+            "error": "Body must contains 'fromdate' (DATE) field"
+        })
+
+    if "todate" not in post_body:
+        return web.json_response({
+            "error": "Body must contains 'todate' (DATE) field"
+        })
+
+    return web.json_response({
+        'token': encode_arguments(
+            import_reads=include_imports,
+            export_reads=include_exports,
+            fromdate=post_body['fromdate'],
+            todate=post_body['todate'],
+            username=request.headers["username"],
+            api_key=request.headers["api-key"],
+            filename=post_body.get('filename', 'readings.csv')
+        )
+    })
+
+
+@routes.get("/download")
+async def download(request):
+    if 'token' not in request.query:
+        return web.json_response({
+            'error': "You must provide 'token' field"
+        })
+
+    try:
+        body = decode_arguments(request.query['token'])
+    except (ValueError, KeyError):
+        return web.json_response({
+            'error': "File it not available anymore"
+        })
+
+    remote_name = await get_remote_name(
+        local_db=request.app['local_db'],
+        username=body['username'],
+        api_key=body['api_key']
+    )
+
     meter_alias = 'm'
     reading_alias = 'r'
 
@@ -121,14 +258,8 @@ async def readings_get(request):
         f'{reading_alias}.export_total': 'export_day_total_wh'
     }
 
-    post_body = await request.post()
-    include_imports = bool(post_body.get('import_reads', False))
-    include_exports = bool(post_body.get('export_reads', False))
-
-    if not include_imports and not include_exports:
-        return web.json_response({
-            "error": "Both import_reads and export_reads are false"
-        })
+    include_imports = body['import_reads']
+    include_exports = body['export_reads']
 
     select_names = []
     select_names.extend(both_names)
@@ -139,35 +270,20 @@ async def readings_get(request):
     if include_exports:
         select_names.extend(export_names)
 
-    select_query = (f"""
-        SELECT { ','.join(select_names) }
+    select_query = "SELECT " + f"""
+        { ','.join(select_names) }
         FROM readings_reading AS {reading_alias}
         INNER JOIN meters_meter AS {meter_alias} ON {meter_alias}.id = {reading_alias}.meter_id
         WHERE {reading_alias}.meter_id IN
         (SELECT meter_id FROM users_profile_meters WHERE profile_id =
         (SELECT id FROM auth_user WHERE username = %(username)s)) 
         AND date >= %(fromdate)s AND date <= %(todate)s; 
-    """)
-
-    if "fromdate" not in post_body:
-        return web.json_response({
-            "error": "Body must contains 'fromdate' (DATE) field"
-        })
-
-    if "todate" not in post_body:
-        return web.json_response({
-            "error": "Body must contains 'todate' (DATE) field"
-        })
-
-    if "receiver_email" not in post_body:
-        return web.json_response({
-            "error": "Body must contains 'receiver_email' (STRING) field"
-        })
+    """
 
     parameters = {
-        'fromdate': post_body["fromdate"],
-        'todate': post_body['todate'],
-        'username': request['username']
+        'fromdate': body["fromdate"],
+        'todate': body['todate'],
+        'username': remote_name
     }
 
     csv_response = StringIO()
@@ -188,77 +304,19 @@ async def readings_get(request):
                     response_row[selected_column] = value
                 writer.writerow(response_row)
 
-    csv_response.seek(0)
-
-    send_email = request.app['send_email']
-
-    message = MIMEMultipart()
-    message['From'] = post_body.get('sender_email', config.SMTP_SENDER)
-    message['To'] = post_body['receiver_email']
-    message['Subject'] = post_body.get('message_subject', 'readings')
-
-    if 'message_content' in post_body:
-        message.attach(MIMEText(post_body['message_content']))
-
-    filename = post_body.get('filename', 'readings.csv')
-    part = MIMEApplication(
-        csv_response.read().encode(),
-        Name=filename
-    )
-    part['Content-Disposition'] = f'attachment; filename="{filename}"'
-    message.attach(part)
-
-    await send_email(message)
-    return web.json_response({
-        "data": "success"
-    })
-
-
-async def access_logging(request):
-    async with request.app["local_db"].acquire() as conn:
-        async with conn.cursor() as cursor:
-            request_log = """
-                 INSERT INTO request_log (datetime, name) 
-                     VALUES (%(datetime)s, %(name)s)
-             """
-            await cursor.execute(request_log, {
-                "datetime": datetime.datetime.now(),
-                "name": request.headers["username"]
-            })
-
-
-@web.middleware
-async def api_key_middleware(request, handler):
-    if "username" not in request.headers or "api-key" not in request.headers:
-        return web.json_response({
-            "error": "You must provide 'username' and 'api-key' http headers"
-        })
-
-    async with request.app["local_db"].acquire() as conn:
-        async with conn.cursor() as cursor:
-            select_username = """
-                SELECT keys.remote_name
-                FROM api_keys as keys
-                WHERE 
-                  NOT keys.disabled
-                AND
-                  keys.name = %(name)s 
-                AND 
-                  keys.key = %(key)s
-            """
-            await cursor.execute(select_username, {
-                "name": str(request.headers["username"]),
-                "key": str(request.headers["api-key"])
-            })
-            async for remote_name, in cursor:
-                request["username"] = remote_name
-
-    if "username" not in request:
-        return web.json_response({
-            "error": "You provide wrong 'username' or 'api-key' headers"
-        })
-
-    return await handler(request)
+    filename = body.get("filename", "readings.csv")
+    response = web.StreamResponse()
+    response.headers['CONTENT-DISPOSITION'] = f'attachment; filename="{filename}"'
+    await response.prepare(request)
+    try:
+        csv_response.seek(0)
+        while True:
+            file_part = csv_response.read(4096*4096)
+            if len(file_part) <= 0:
+                break
+            await response.write(file_part.encode())
+    finally:
+        await response.write_eof()
 
 
 async def pg_pool(app):
@@ -302,11 +360,7 @@ async def smtp_pool(app):
 
 
 async def api_app():
-    app = web.Application(
-        middlewares=[
-            api_key_middleware
-        ]
-    )
+    app = web.Application()
     app.cleanup_ctx.append(pg_pool)
     app.cleanup_ctx.append(smtp_pool)
     app.add_routes(routes)
