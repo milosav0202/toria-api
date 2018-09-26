@@ -318,6 +318,7 @@ async def download(request):
             await response.write(file_part.encode())
     finally:
         await response.write_eof()
+    return response
 
 
 async def pg_pool(app):
