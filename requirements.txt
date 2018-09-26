@@ -1,3 +1,4 @@
+pyaes
 aiosmtplib
 aiohttp==3.3.2
 aiopg==0.14.0

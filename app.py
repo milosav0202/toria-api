@@ -1,10 +1,7 @@
 import csv
 import json
-import random
 import urllib.parse
 from io import StringIO
-
-import aiosmtplib
 
 import asyncio
 import datetime
