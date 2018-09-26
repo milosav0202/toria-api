@@ -191,7 +191,6 @@ async def readings_get(request):
             todate=post_body['todate'],
             username=request.headers["username"],
             api_key=request.headers["api-key"],
-            filename=post_body.get('filename', 'readings.csv')
         )
     })
 
@@ -304,7 +303,9 @@ async def download(request):
                     response_row[selected_column] = value
                 writer.writerow(response_row)
 
-    filename = body.get("filename", "readings.csv")
+    current_time = datetime.datetime.now().strftime('%Y%m%d%H%M')
+    filename = f"{body['username']}_{current_time}_csvexport.csv"
+
     response = web.StreamResponse()
     response.headers['CONTENT-DISPOSITION'] = f'attachment; filename="{filename}"'
     await response.prepare(request)
@@ -327,42 +328,9 @@ async def pg_pool(app):
             yield  # <!> Do not remove this yield.
 
 
-async def smtp_pool(app):
-    semaphore = asyncio.Semaphore(value=1)
-    connection_pool = []
-
-    async def connect():
-        smtp = aiosmtplib.SMTP(hostname=config.SMTP_HOST, port=config.SMTP_PORT)
-        await smtp.connect()
-        await smtp.login(username=config.SMTP_USERNAME, password=config.SMTP_PASSWORD)
-        connection_pool.append(smtp)
-
-    async def send_message(message, **kwargs):
-        for _ in range(config.SMTP_SENDING_ATTEMPTS):
-            async with semaphore:
-                while len(connection_pool) < config.SMTP_CONNECTIONS:
-                    await connect()
-
-            smtp = connection_pool.pop(random.randint(0, config.SMTP_CONNECTIONS - 1))
-            try:
-                await smtp.send_message(message, config.SMTP_SENDER, **kwargs)
-                connection_pool.append(smtp)
-                return
-            except aiosmtplib.SMTPException as ex:
-                print(type(ex), ex)
-
-    app['send_email'] = send_message
-
-    yield  # <!> Do not remove this yield.
-
-    for connection in connection_pool:
-        connection.close()
-
-
 async def api_app():
     app = web.Application()
     app.cleanup_ctx.append(pg_pool)
-    app.cleanup_ctx.append(smtp_pool)
     app.add_routes(routes)
     return app
 
