@@ -57,6 +57,7 @@ Copy following lines and fill with your settings.
 ```python
 REMOTE_DATABASE = "postgres://........."
 LOCAL_DATABASE = "postgres://........."
+SECRET_KEY = "PRODUCTION SECRET KEY STRING (KEEP IT IN SECRET)"
 ```
 
 ##7. Install and configure supervisor

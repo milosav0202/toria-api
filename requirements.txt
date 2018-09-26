@@ -1,5 +1,4 @@
 pyaes
-aiosmtplib
 aiohttp==3.3.2
 aiopg==0.14.0
 async-timeout==3.0.0
