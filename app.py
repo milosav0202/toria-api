@@ -318,6 +318,73 @@ async def download(request):
     return response
 
 
+@routes.post("/emc1sp/export_query")
+@api_key_headers
+async def emc1sp_export_query(request):
+    body = await request.post()
+
+    if "fromdate" not in body:
+        return web.json_response({
+            "error": "Body must contains 'fromdate' (DATE) field"
+        })
+
+    if "todate" not in body:
+        return web.json_response({
+            "error": "Body must contains 'todate' (DATE) field"
+        })
+
+    select_query = """-- noinspection SqlResolveForFile
+        SELECT m.name, m.mpan, m.location, r.date,
+            r.export_total_wh, -- Domestic Load kWh
+            spc.grid_energy_wh, -- Grid Energy Utilised kWh
+            r.import_total_wh, -- Grid Export kWh
+            r.export_total_wh_b, -- Solar Storage Utilised kWh
+            spc.generation_wh, -- Generation kWh
+            spc.charge_wh, -- Battery Charge kWh
+            g.import_total_wh -- Gas Total m3
+        
+        FROM readings_reading AS r
+        INNER JOIN readings_gasreading AS g ON (r.name=g.name)
+        INNER JOIN readings_spcreading AS spc ON (r.name=spc.name)
+        INNER JOIN meters_meter AS m ON (m.id=r.meter_id)
+        WHERE r.meter_id IN
+        (SELECT meter_id FROM users_profile_meters WHERE profile_id =
+        (SELECT id FROM auth_user WHERE username = %(username)s)) --username taken from remote_name of APIKeys
+        AND r.date >= %(fromdate)s AND r.date <= %(todate)s; -- from and to dates from body of request
+    """
+
+    parameters = {
+        'fromdate': body["fromdate"],
+        'todate': body['todate'],
+        'username': request["username"],
+    }
+
+    query_fields = (
+        'name', 'reference', 'description', 'date',
+        'domestic_load_kwh',
+        'grid_energy_utilised_kwh',
+        'grid_export_kwh',
+        'solar_storage_utilised_kwh',
+        'generation_kwh',
+        'battery_charge_kwh',
+        'gas_total_m3'
+    )
+
+    response = []
+    async with request.app["remote_db"].acquire() as conn:
+        async with conn.cursor() as cursor:
+            await cursor.execute(select_query, parameters)
+            async for selected_row in cursor:
+                item = dict(zip(query_fields, selected_row))
+                item['date'] = item['date'].strftime("%Y-%m-%d")
+                item['solar_generation_kwh'] = item['generation_kwh'] - item['battery_charge_kwh']
+                response.append(item)
+
+    return web.json_response({
+        'data': response
+    })
+
+
 async def pg_pool(app):
     async with aiopg.create_pool(config.LOCAL_DATABASE) as local_pool:
         app["local_db"] = local_pool
