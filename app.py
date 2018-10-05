@@ -359,8 +359,7 @@ async def emc1sp_export_query(request):
         'username': request["username"],
     }
 
-    query_fields = (
-        'name', 'reference', 'description', 'date',
+    to_kwh_fields = (
         'domestic_load_kwh',
         'grid_energy_utilised_kwh',
         'grid_export_kwh',
@@ -370,12 +369,21 @@ async def emc1sp_export_query(request):
         'gas_total_m3'
     )
 
+    query_fields = (
+        'name', 'reference', 'description', 'date',
+        *to_kwh_fields
+    )
+
     response = []
     async with request.app["remote_db"].acquire() as conn:
         async with conn.cursor() as cursor:
             await cursor.execute(select_query, parameters)
             async for selected_row in cursor:
                 item = dict(zip(query_fields, selected_row))
+
+                for wh_field in to_kwh_fields:
+                    item[wh_field] /= 1000
+
                 item['date'] = item['date'].strftime("%Y-%m-%d")
                 item['solar_generation_kwh'] = item['generation_kwh'] - item['battery_charge_kwh']
                 response.append(item)
