@@ -397,12 +397,12 @@ async def select_export_query(remote_db, remote_name, from_date, to_date):
         'solar_storage_utilised_kwh',
         'generation_kwh',
         'battery_charge_kwh',
-        'gas_total_m3'
     )
 
     query_fields = (
         'name', 'reference', 'description', 'date',
-        *to_kwh_fields
+        *to_kwh_fields,
+        'gas_total_m3'
     )
 
     async with remote_db.acquire() as conn:
