@@ -142,13 +142,13 @@ async def index(request):
     })
 
 
-def encode_arguments(**arguments):
+def encode_token(**arguments):
     aes = pyaes.AESModeOfOperationCTR(hashlib.sha256(config.SECRET_KEY.encode()).digest())
     raw_encoded = aes.encrypt(json.dumps(arguments).encode())
     return urllib.parse.quote(base64.b64encode(raw_encoded).decode())
 
 
-def decode_arguments(encoded):
+def decode_token(encoded):
     # noinspection PyBroadException
     try:
         raw_encoded = base64.b64decode(urllib.parse.unquote(encoded).encode())
@@ -158,58 +158,56 @@ def decode_arguments(encoded):
         raise ValueError("Failed to decode arguments")
 
 
-@routes.post("/readings/get")
-@api_key_headers
-async def readings_get(request):
-    post_body = await request.post()
-    include_imports = bool(post_body.get('import_reads', False))
-    include_exports = bool(post_body.get('export_reads', False))
+def create_request_token(request_function,  **request_args):
+    target_requests = {
+        download_readings: 'readings/get',
+        download_export_query: 'emc1sp/exp',
+    }
+    return encode_token(tr=target_requests[request_function], ra=request_args, v=2)
 
-    if not include_imports and not include_exports:
-        return web.json_response({
-            "error": "Both import_reads and export_reads are false"
-        })
 
-    if "fromdate" not in post_body:
-        return web.json_response({
-            "error": "Body must contains 'fromdate' (DATE) field"
-        })
+def parse_request_token(token):
+    request_functions = {
+        'readings/get': download_readings,
+        'emc1sp/exp': download_export_query
+    }
 
-    if "todate" not in post_body:
-        return web.json_response({
-            "error": "Body must contains 'todate' (DATE) field"
-        })
+    token_data = decode_token(token)
+    if 'v' in token_data:
+        version = token_data['v']
+        if version == 2:
+            target_request = token_data['tr']
+            request_args = token_data['ra']
+            return request_functions[target_request], request_args
+        else:
+            ValueError("Unknown token version")
 
-    return web.json_response({
-        'token': encode_arguments(
-            import_reads=include_imports,
-            export_reads=include_exports,
-            fromdate=post_body['fromdate'],
-            todate=post_body['todate'],
-            username=request.headers["username"],
-            api_key=request.headers["api-key"],
-        )
+    else:  # Legacy version only for "requests/get" endpoint
+        return download_readings, decode_token(token)
+
+
+def rename_args(request_args, name_table):
+    for old_name, new_name in name_table.items():
+        if old_name not in request_args:
+            continue
+        request_args[new_name] = request_args[old_name]
+        del request_args[old_name]
+
+
+async def download_readings(request, request_args):
+    rename_args(request_args, {
+        'ir': 'import_reads',
+        'er': 'export_reads',
+        'fd': 'fromdate',
+        'td': 'todate',
+        'usr': 'username',
+        'key': 'api_key'
     })
-
-
-@routes.get("/download")
-async def download(request):
-    if 'token' not in request.query:
-        return web.json_response({
-            'error': "You must provide 'token' field"
-        })
-
-    try:
-        body = decode_arguments(request.query['token'])
-    except (ValueError, KeyError):
-        return web.json_response({
-            'error': "File it not available anymore"
-        })
 
     remote_name = await get_remote_name(
         local_db=request.app['local_db'],
-        username=body['username'],
-        api_key=body['api_key']
+        username=request_args['username'],
+        api_key=request_args['api_key']
     )
 
     meter_alias = 'm'
@@ -254,16 +252,13 @@ async def download(request):
         f'{reading_alias}.export_total': 'export_day_total_wh'
     }
 
-    include_imports = body['import_reads']
-    include_exports = body['export_reads']
-
     select_names = []
     select_names.extend(both_names)
 
-    if include_imports:
+    if request_args['import_reads']:
         select_names.extend(import_names)
 
-    if include_exports:
+    if request_args['export_reads']:
         select_names.extend(export_names)
 
     select_query = "SELECT " + f"""
@@ -277,8 +272,8 @@ async def download(request):
     """
 
     parameters = {
-        'fromdate': body["fromdate"],
-        'todate': body['todate'],
+        'fromdate': request_args["fromdate"],
+        'todate': request_args['todate'],
         'username': remote_name
     }
 
@@ -301,7 +296,159 @@ async def download(request):
                 writer.writerow(response_row)
 
     current_time = datetime.datetime.now().strftime('%Y%m%d%H%M')
-    filename = f"{body['username']}_{current_time}_csvexport.csv"
+    filename = f"{request_args['username']}_{current_time}_csvexport.csv"
+
+    response = web.StreamResponse()
+    response.headers['CONTENT-DISPOSITION'] = f'attachment; filename="{filename}"'
+    await response.prepare(request)
+    try:
+        csv_response.seek(0)
+        while True:
+            file_part = csv_response.read(4096*4096)
+            if len(file_part) <= 0:
+                break
+            await response.write(file_part.encode())
+    finally:
+        await response.write_eof()
+    return response
+
+
+@routes.post("/readings/get")
+@api_key_headers
+async def readings_get(request):
+    post_body = await request.post()
+    include_imports = bool(post_body.get('import_reads', False))
+    include_exports = bool(post_body.get('export_reads', False))
+
+    if not include_imports and not include_exports:
+        return web.json_response({
+            "error": "Both import_reads and export_reads are false"
+        })
+
+    if "fromdate" not in post_body:
+        return web.json_response({
+            "error": "Body must contains 'fromdate' (DATE) field"
+        })
+
+    if "todate" not in post_body:
+        return web.json_response({
+            "error": "Body must contains 'todate' (DATE) field"
+        })
+
+    return web.json_response({
+        'token': create_request_token(download_readings, **{
+            'ir': include_imports,
+            'er': include_exports,
+            'fd': post_body['fromdate'],
+            'td': post_body['todate'],
+            'usr': request.headers["username"],
+            'key': request.headers["api-key"],
+        })
+    })
+
+
+@routes.get("/download")
+async def download(request):
+    if 'token' not in request.query:
+        return web.json_response({
+            'error': "You must provide 'token' field"
+        })
+
+    try:
+        target_function, request_args = parse_request_token(request.query['token'])
+        return await target_function(request, request_args)
+    except (ValueError, KeyError):
+        return web.json_response({
+            'error': "Invalid token"
+        })
+
+
+async def select_export_query(remote_db, remote_name, from_date, to_date):
+    select_query = """-- noinspection SqlResolveForFile
+        SELECT m.name, m.mpan, m.location, r.date,
+            r.export_total_wh, -- Domestic Load kWh
+            spc.grid_energy_wh, -- Grid Energy Utilised kWh
+            r.import_total_wh, -- Grid Export kWh
+            r.export_total_wh_b, -- Solar Storage Utilised kWh
+            spc.generation_wh, -- Generation kWh
+            spc.charge_wh, -- Battery Charge kWh
+            g.import_total_wh -- Gas Total m3
+
+        FROM readings_reading AS r
+        INNER JOIN readings_gasreading AS g ON (r.name=g.name)
+        INNER JOIN readings_spcreading AS spc ON (r.name=spc.name)
+        INNER JOIN meters_meter AS m ON (m.id=r.meter_id)
+        WHERE r.meter_id IN
+        (SELECT meter_id FROM users_profile_meters WHERE profile_id =
+        (SELECT id FROM auth_user WHERE username = %(username)s)) --username taken from remote_name of APIKeys
+        AND r.date >= %(fromdate)s AND r.date <= %(todate)s; -- from and to dates from body of request
+    """
+
+    parameters = {
+        'fromdate': from_date,
+        'todate': to_date,
+        'username': remote_name,
+    }
+
+    to_kwh_fields = (
+        'domestic_load_kwh',
+        'grid_energy_utilised_kwh',
+        'grid_export_kwh',
+        'solar_storage_utilised_kwh',
+        'generation_kwh',
+        'battery_charge_kwh',
+        'gas_total_m3'
+    )
+
+    query_fields = (
+        'name', 'reference', 'description', 'date',
+        *to_kwh_fields
+    )
+
+    async with remote_db.acquire() as conn:
+        async with conn.cursor() as cursor:
+            await cursor.execute(select_query, parameters)
+            async for selected_row in cursor:
+                item = dict(zip(query_fields, selected_row))
+
+                for wh_field in to_kwh_fields:
+                    item[wh_field] /= 1000
+
+                item['date'] = item['date'].strftime("%Y-%m-%d")
+                item['solar_generation_kwh'] = item['generation_kwh'] - item['battery_charge_kwh']
+                yield item
+
+
+async def download_export_query(request, request_args):
+    field_names = (
+        'name', 'reference', 'description', 'date',
+        'domestic_load_kwh',
+        'grid_energy_utilised_kwh',
+        'grid_export_kwh',
+        'solar_storage_utilised_kwh',
+        'generation_kwh',
+        'battery_charge_kwh',
+        'solar_generation_kwh',
+        'gas_total_m3',
+    )
+
+    csv_response = StringIO()
+    writer = csv.DictWriter(csv_response, field_names)
+    writer.writerow(dict(zip(field_names, field_names)))
+
+    from_date = request_args['fd']
+    to_date = request_args['td']
+    remote_name = await get_remote_name(
+        local_db=request.app['local_db'],
+        username=request_args['usr'],
+        api_key=request_args['key']
+    )
+
+    async for response_row in select_export_query(request.app['remote_db'], remote_name, from_date, to_date):
+        writer.writerow(response_row)
+
+    current_time = datetime.datetime.now().strftime('%Y%m%d%H%M')
+    filename = f"{request_args['usr']}_{current_time}_csvexport.csv"
 
     response = web.StreamResponse()
     response.headers['CONTENT-DISPOSITION'] = f'attachment; filename="{filename}"'
@@ -327,70 +474,32 @@ async def emc1sp_export_query(request):
         return web.json_response({
             "error": "Body must contains 'fromdate' (DATE) field"
         })
+    from_date = body['fromdate']
 
     if "todate" not in body:
         return web.json_response({
             "error": "Body must contains 'todate' (DATE) field"
         })
+    to_date = body['todate']
 
-    select_query = """-- noinspection SqlResolveForFile
-        SELECT m.name, m.mpan, m.location, r.date,
-            r.export_total_wh, -- Domestic Load kWh
-            spc.grid_energy_wh, -- Grid Energy Utilised kWh
-            r.import_total_wh, -- Grid Export kWh
-            r.export_total_wh_b, -- Solar Storage Utilised kWh
-            spc.generation_wh, -- Generation kWh
-            spc.charge_wh, -- Battery Charge kWh
-            g.import_total_wh -- Gas Total m3
-        
-        FROM readings_reading AS r
-        INNER JOIN readings_gasreading AS g ON (r.name=g.name)
-        INNER JOIN readings_spcreading AS spc ON (r.name=spc.name)
-        INNER JOIN meters_meter AS m ON (m.id=r.meter_id)
-        WHERE r.meter_id IN
-        (SELECT meter_id FROM users_profile_meters WHERE profile_id =
-        (SELECT id FROM auth_user WHERE username = %(username)s)) --username taken from remote_name of APIKeys
-        AND r.date >= %(fromdate)s AND r.date <= %(todate)s; -- from and to dates from body of request
-    """
+    file_creation = body.get('filecreation', False) in ['true', '1']
+    if file_creation:
+        return web.json_response({
+            'token': create_request_token(download_export_query, **{
+                'usr': request.headers["username"],
+                'key': request.headers["api-key"],
+                'fd': from_date,
+                'td': to_date
+            })
+        })
+    else:
+        response = []
+        async for item in select_export_query(request.app['remote_db'], request['username'], from_date, to_date):
+            response.append(item)
 
-    parameters = {
-        'fromdate': body["fromdate"],
-        'todate': body['todate'],
-        'username': request["username"],
-    }
-
-    to_kwh_fields = (
-        'domestic_load_kwh',
-        'grid_energy_utilised_kwh',
-        'grid_export_kwh',
-        'solar_storage_utilised_kwh',
-        'generation_kwh',
-        'battery_charge_kwh',
-        'gas_total_m3'
-    )
-
-    query_fields = (
-        'name', 'reference', 'description', 'date',
-        *to_kwh_fields
-    )
-
-    response = []
-    async with request.app["remote_db"].acquire() as conn:
-        async with conn.cursor() as cursor:
-            await cursor.execute(select_query, parameters)
-            async for selected_row in cursor:
-                item = dict(zip(query_fields, selected_row))
-
-                for wh_field in to_kwh_fields:
-                    item[wh_field] /= 1000
-
-                item['date'] = item['date'].strftime("%Y-%m-%d")
-                item['solar_generation_kwh'] = item['generation_kwh'] - item['battery_charge_kwh']
-                response.append(item)
-
-    return web.json_response({
-        'data': response
-    })
+        return web.json_response({
+            'data': response
+        })
 
 
 async def pg_pool(app):
