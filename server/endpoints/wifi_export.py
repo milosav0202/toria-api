@@ -22,9 +22,21 @@ def wifi_field_names():
     }
 
 
-@endpoints.post('/spc/wifi_token')
+@endpoints.post('/wifi/csv_token')
 async def wifi_csv_token(request):
     request_data = await request.post()
+
+    is_superuser = request_data.get('is_superuser', '0') in ('true', '1')
+
+    if 'date_from' not in request_data:
+        return web.json_response({'error': "missing 'date_from'"})
+    if 'date_to' not in request_data:
+        return web.json_response({'error': "missing 'date_to'"})
+    if 'fields' not in request_data:
+        return web.json_response({'error': "missing 'fields'"})
+    if 'username' not in request_data:
+        if not is_superuser:
+            return web.json_response({'error': "missing 'username'"})
 
     valid_fields = wifi_field_names()
     for field in request_data.getall('fields'):
