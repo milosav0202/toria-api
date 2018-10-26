@@ -14,5 +14,8 @@ def add_to(app: web.Application):
     from .spc_export import endpoints as spc_export
     app.add_routes(spc_export)
 
+    from .wifi_export import endpoints as wifi_export
+    app.add_routes(wifi_export)
+
     from .total_readings import endpoints as total_readings
     app.add_routes(total_readings)
