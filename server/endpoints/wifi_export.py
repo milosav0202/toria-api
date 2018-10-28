@@ -13,7 +13,7 @@ def wifi_field_names():
         'serial': 'meter.name',
         'mpan': 'meter.mpan',
         'location': 'meter.location',
-        'datetime': 'wifi_reading.datetime',
+        'date': 'wifi_reading.datetime',
         'status': 'wifi_reading.status',
         'power_output': 'wifi_reading.power_output',
         'solar_generation': 'wifi_reading.solar_generation',
@@ -69,8 +69,7 @@ async def wifi_iter(app, username, slugs, meter_type, fields, date_from, date_to
         FROM users_profile_meters as profile_meters
           INNER JOIN meters_meter as meter
           ON meter.id = profile_meters.meter_id
-        WHERE meter.type = %(meter_type)s
-          AND (
+        WHERE (
             %(empty_slugs)s OR -- TRUE if no slugs 
             meter.name IN %(slugs)s
           )

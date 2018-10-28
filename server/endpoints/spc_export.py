@@ -11,6 +11,7 @@ endpoints = web.RouteTableDef()
 def spc_field_names():
     return {
         'serial': 'meter.name',
+        'reading_id': 'reading.id',
         'mpan': 'meter.mpan',
         'location': 'meter.location',
         'date': 'reading.date',
@@ -52,7 +53,7 @@ def spc_field_names():
 
         # ------------------------------------------------------------------------------------
         # spc_readings
-
+        'grid_energy_total': 'spc_reading.grid_energy_wh',
         'grid_energy_daily': 'spc_reading.grid_energy',
         'charge_total': 'spc_reading.charge_wh',
         'charge_daily': 'spc_reading.export_total',
@@ -127,7 +128,7 @@ async def spc_csv_token(request):
     })
 
 
-async def spc_iter(app, username, slugs, meter_type, fields, date_from, date_to):
+async def spc_iter(app, username, slugs, fields, date_from, date_to):
     # Collect field names like in DB
     field_names = spc_field_names()
     select_names = [field_names[field] for field in fields]
@@ -144,8 +145,7 @@ async def spc_iter(app, username, slugs, meter_type, fields, date_from, date_to)
         FROM users_profile_meters as profile_meters
           INNER JOIN meters_meter as meter
           ON meter.id = profile_meters.meter_id
-        WHERE meter.type = %(meter_type)s
-          AND (
+        WHERE (
             %(empty_slugs)s OR -- TRUE if no slugs 
             meter.name IN %(slugs)s
           )
@@ -162,7 +162,6 @@ async def spc_iter(app, username, slugs, meter_type, fields, date_from, date_to)
     async with database.openmetrics(app) as connection:
         async with connection.cursor() as cursor:
             await cursor.execute(select_query, {
-                'meter_type': meter_type,
                 'empty_slugs': not slugs,
                 # avoid sql syntax error: 'meter.name IN ()'
                 #                                     ^^^^^
@@ -179,7 +178,7 @@ async def spc_iter(app, username, slugs, meter_type, fields, date_from, date_to)
                 yield response_item
 
 
-async def spc_csv_iter(app, username, slugs, meter_type, fields, date_from, date_to):
+async def spc_csv_iter(app, username, slugs, fields, date_from, date_to):
     csv_response = io.StringIO()
     writer = csv.DictWriter(csv_response, fields)
     writer.writeheader()
@@ -188,7 +187,6 @@ async def spc_csv_iter(app, username, slugs, meter_type, fields, date_from, date
         app=app,
         username=username,
         slugs=slugs,
-        meter_type=meter_type,
         fields=fields,
         date_from=date_from,
         date_to=date_to,
@@ -218,7 +216,6 @@ async def spc_csv(request, request_args):
         app=request.app,
         username=request_args.get('username'),
         slugs=request_args.get('slugs', []),
-        meter_type='SP',
         fields=request_args['fields'],
         date_from=request_args['date_from'],
         date_to=request_args['date_to'],
