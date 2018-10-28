@@ -10,10 +10,13 @@ endpoints = web.RouteTableDef()
 
 def regular_field_names():
     return {
+        'reading_id': 'reading.id',
         'serial': 'meter.name',
         'mpan': 'meter.mpan',
         'location': 'meter.location',
         'date': 'reading.date',
+        'import_total': '(reading.import_total_wh * 0.001) as import_total',
+        'import_daily': 'reading.import_total',
         **{
             f'import{number}': f'reading.import{number}'
             for number in [
@@ -24,12 +27,8 @@ def regular_field_names():
                 '2000', '2030', '2100', '2130', '2200', '2230', '2300', '2330'
             ]
         },
-        'import_total': 'reading.import_total',
-        'import_day': 'reading.import_day',
-        'import_night': 'reading.import_night',
-        'import_total_wh': 'reading.import_total_wh',
-        'import_day_wh': 'reading.import_day_wh',
-        'import_night_wh': 'reading.import_night_wh',
+        'export_total': '(reading.export_total_wh * 0.001) as export_total',
+        'export_daily': 'reading.export_total',
         **{
             f'export{number}': f'reading.export{number}'
             for number in [
@@ -40,14 +39,10 @@ def regular_field_names():
                 '2000', '2030', '2100', '2130', '2200', '2230', '2300', '2330'
             ]
         },
-        'export_total': 'reading.export_total',
-        'export_day': 'reading.export_day',
-        'export_night': 'reading.export_night',
-        'export_total_wh': 'reading.export_total_wh',
-        'export_day_wh': 'reading.export_day_wh',
-        'export_night_wh': 'reading.export_night_wh',
+        'extra_total': '(reading.export_total_wh_b * 0.001) as extra_total',
+        'extra_daily': 'reading.export_total_b',
         **{
-            f'import{number}_b': f'reading.import{number}_b'
+            f'extra{number}': f'reading.export{number}_b'
             for number in [
                 '0000', '0030', '0100', '0130', '0200', '0230', '0300', '0330', '0400', '0430',
                 '0500', '0530', '0600', '0630', '0700', '0730', '0800', '0830', '0900', '0930',
@@ -56,14 +51,10 @@ def regular_field_names():
                 '2000', '2030', '2100', '2130', '2200', '2230', '2300', '2330'
             ]
         },
-        'import_total_b': 'reading.import_total_b',
-        'import_day_b': 'reading.import_day_b',
-        'import_night_b': 'reading.import_night_b',
-        'import_total_wh_b': 'reading.import_total_wh_b',
-        'import_day_wh_b': 'reading.import_day_wh_b',
-        'import_night_wh_b': 'reading.import_night_wh_b',
+        'utilisation_total': '((reading.export_total_wh - reading.export_total_wh_b) * 0.001) as utilisation_total',
+        'utilisation_daily': '(reading.export_total - reading.export_total_b) as utilisation_daily',
         **{
-            f'export{number}_b': f'reading.export{number}_b'
+            f'utilisation{number}': f'(reading.export{number} - reading.export{number}_b) as utilisation{number}'
             for number in [
                 '0000', '0030', '0100', '0130', '0200', '0230', '0300', '0330', '0400', '0430',
                 '0500', '0530', '0600', '0630', '0700', '0730', '0800', '0830', '0900', '0930',
@@ -72,12 +63,6 @@ def regular_field_names():
                 '2000', '2030', '2100', '2130', '2200', '2230', '2300', '2330'
             ]
         },
-        'export_total_b': 'reading.export_total_b',
-        'export_day_b': 'reading.export_day_b',
-        'export_night_b': 'reading.export_night_b',
-        'export_total_wh_b': 'reading.export_total_wh_b',
-        'export_day_wh_b': 'reading.export_day_wh_b',
-        'export_night_wh_b': 'reading.export_night_wh_b',
     }
 
 
@@ -116,7 +101,7 @@ async def regular_csv_token(request):
     })
 
 
-async def regular_iter(app, username, slugs, meter_type, fields, date_from, date_to):
+async def regular_iter(app, username, slugs, fields, date_from, date_to):
     # Collect field names like in DB
     field_names = regular_field_names()
     select_names = [field_names[field] for field in fields]
@@ -131,8 +116,7 @@ async def regular_iter(app, username, slugs, meter_type, fields, date_from, date
         FROM users_profile_meters as profile_meters
           INNER JOIN meters_meter as meter
           ON meter.id = profile_meters.meter_id
-        WHERE meter.type = %(meter_type)s
-          AND (
+        WHERE (
             %(empty_slugs)s OR -- TRUE if no slugs 
             meter.name IN %(slugs)s
           )
@@ -149,7 +133,6 @@ async def regular_iter(app, username, slugs, meter_type, fields, date_from, date
     async with database.openmetrics(app) as connection:
         async with connection.cursor() as cursor:
             await cursor.execute(select_query, {
-                'meter_type': meter_type,
                 'empty_slugs': not slugs,
                 # avoid sql syntax error: 'meter.name IN ()'
                 #                                     ^^^^^
@@ -166,7 +149,7 @@ async def regular_iter(app, username, slugs, meter_type, fields, date_from, date
                 yield response_item
 
 
-async def regular_csv_iter(app, username, slugs, meter_type, fields, date_from, date_to):
+async def regular_csv_iter(app, username, slugs, fields, date_from, date_to):
     csv_response = io.StringIO()
     writer = csv.DictWriter(csv_response, fields)
     writer.writeheader()
@@ -175,7 +158,6 @@ async def regular_csv_iter(app, username, slugs, meter_type, fields, date_from, 
         app=app,
         username=username,
         slugs=slugs,
-        meter_type=meter_type,
         fields=fields,
         date_from=date_from,
         date_to=date_to,
@@ -205,7 +187,6 @@ async def regular_csv(request, request_args):
         app=request.app,
         username=request_args.get('username'),
         slugs=request_args.get('slugs', []),
-        meter_type='SP',
         fields=request_args['fields'],
         date_from=request_args['date_from'],
         date_to=request_args['date_to'],

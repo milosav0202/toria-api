@@ -11,6 +11,7 @@ endpoints = web.RouteTableDef()
 def spc_field_names():
     return {
         'serial': 'meter.name',
+        'reading_id': 'reading.id',
         'mpan': 'meter.mpan',
         'location': 'meter.location',
         'date': 'reading.date',
@@ -52,7 +53,7 @@ def spc_field_names():
 
         # ------------------------------------------------------------------------------------
         # spc_readings
-
+        'grid_energy_total': 'spc_reading.grid_energy_wh',
         'grid_energy_daily': 'spc_reading.grid_energy',
         'charge_total': 'spc_reading.charge_wh',
         'charge_daily': 'spc_reading.export_total',
@@ -144,8 +145,7 @@ async def spc_iter(app, username, slugs, meter_type, fields, date_from, date_to)
         FROM users_profile_meters as profile_meters
           INNER JOIN meters_meter as meter
           ON meter.id = profile_meters.meter_id
-        WHERE meter.type = %(meter_type)s
-          AND (
+        WHERE (
             %(empty_slugs)s OR -- TRUE if no slugs 
             meter.name IN %(slugs)s
           )
