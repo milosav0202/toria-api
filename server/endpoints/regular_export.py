@@ -1,200 +1,174 @@
-import csv
-import datetime
-import io
-
-from aiohttp import web
-from server.utility import database, tokens, config
+from server.utility.exporter import *
 
 endpoints = web.RouteTableDef()
 
 
-def regular_field_names():
-    return {
-        'reading_id': 'reading.id',
-        'serial': 'meter.name',
-        'mpan': 'meter.mpan',
-        'location': 'meter.location',
-        'date': 'reading.date',
-        'import_total': '(reading.import_total_wh * 0.001) as import_total',
-        'import_daily': 'reading.import_total',
-        **{
-            f'import{number}': f'reading.import{number}'
-            for number in [
-                '0000', '0030', '0100', '0130', '0200', '0230', '0300', '0330', '0400', '0430',
-                '0500', '0530', '0600', '0630', '0700', '0730', '0800', '0830', '0900', '0930',
-                '1000', '1030', '1100', '1130', '1200', '1230', '1300', '1330', '1400', '1430',
-                '1500', '1530', '1600', '1630', '1700', '1730', '1800', '1830', '1900', '1930',
-                '2000', '2030', '2100', '2130', '2200', '2230', '2300', '2330'
-            ]
-        },
-        'export_total': '(reading.export_total_wh * 0.001) as export_total',
-        'export_daily': 'reading.export_total',
-        **{
-            f'export{number}': f'reading.export{number}'
-            for number in [
-                '0000', '0030', '0100', '0130', '0200', '0230', '0300', '0330', '0400', '0430',
-                '0500', '0530', '0600', '0630', '0700', '0730', '0800', '0830', '0900', '0930',
-                '1000', '1030', '1100', '1130', '1200', '1230', '1300', '1330', '1400', '1430',
-                '1500', '1530', '1600', '1630', '1700', '1730', '1800', '1830', '1900', '1930',
-                '2000', '2030', '2100', '2130', '2200', '2230', '2300', '2330'
-            ]
-        },
-        'extra_total': '(reading.export_total_wh_b * 0.001) as extra_total',
-        'extra_daily': 'reading.export_total_b',
-        **{
-            f'extra{number}': f'reading.export{number}_b'
-            for number in [
-                '0000', '0030', '0100', '0130', '0200', '0230', '0300', '0330', '0400', '0430',
-                '0500', '0530', '0600', '0630', '0700', '0730', '0800', '0830', '0900', '0930',
-                '1000', '1030', '1100', '1130', '1200', '1230', '1300', '1330', '1400', '1430',
-                '1500', '1530', '1600', '1630', '1700', '1730', '1800', '1830', '1900', '1930',
-                '2000', '2030', '2100', '2130', '2200', '2230', '2300', '2330'
-            ]
-        },
-        'utilisation_total': '((reading.export_total_wh - reading.export_total_wh_b) * 0.001) as utilisation_total',
-        'utilisation_daily': '(reading.export_total - reading.export_total_b) as utilisation_daily',
-        **{
-            f'utilisation{number}': f'(reading.export{number} - reading.export{number}_b) as utilisation{number}'
-            for number in [
-                '0000', '0030', '0100', '0130', '0200', '0230', '0300', '0330', '0400', '0430',
-                '0500', '0530', '0600', '0630', '0700', '0730', '0800', '0830', '0900', '0930',
-                '1000', '1030', '1100', '1130', '1200', '1230', '1300', '1330', '1400', '1430',
-                '1500', '1530', '1600', '1630', '1700', '1730', '1800', '1830', '1900', '1930',
-                '2000', '2030', '2100', '2130', '2200', '2230', '2300', '2330'
-            ]
-        },
-    }
+class RegularExport(DefaultExporter):
+    def __init__(self, request, request_args=None):
+        super().__init__()
+        self.request = request
+        self.request_args = request_args
+
+    times = [
+        '0000', '0030', '0100', '0130', '0200', '0230', '0300', '0330',
+        '0400', '0430', '0500', '0530', '0600', '0630', '0700', '0730',
+        '0800', '0830', '0900', '0930', '1000', '1030', '1100', '1130',
+        '1200', '1230', '1300', '1330', '1400', '1430', '1500', '1530',
+        '1600', '1630', '1700', '1730', '1800', '1830', '1900', '1930',
+        '2000', '2030', '2100', '2130', '2200', '2230', '2300', '2330'
+    ]
+
+    def fields(self):
+        fields = [
+            'serial',
+            'reading_id',
+            'mpan',
+            'location',
+            'date',
+            'import_total_b',
+            'import_daily_b',
+            'extra_total',
+            'extra_daily',
+            'utilisation_total',
+            'utilisation_daily',
+            'import_total',
+            'import_daily',
+            'export_total',
+            'export_daily',
+        ]
+
+        for time in self.times:
+            fields.append('import'+time+"_b")
+            fields.append('export'+time+"_b")
+            fields.append('utilisation' + time)
+            fields.append('import' + time)
+            fields.append('export' + time)
+        return fields
+
+    def meter_type(self):
+        return "SP"
+
+    async def process_meter(self, meter):
+        elements = list()
+        readings = self.get_readings(meter=meter)
+        async for reading_elem in readings:
+            element = dict()
+            reading = Reading(reading_elem, meter)
+            for field_name in self.get_fields():
+                element[field_name] = await self.field_handler(field_name, meter, reading)
+            elements.append(element)
+        return elements
+
+    async def field_handler(self, field, meter, reading):
+        fields = dict()
+
+        fields['serial'] = meter.meter['name']
+        fields['reading_id'] = reading.reading['reading_id']
+        fields['mpan'] = meter.meter['mpan']
+        fields['location'] = meter.meter['location']
+        fields['date'] = reading.reading['date']
+        fields['import_total'] = (reading.reading['import_total'] or 0) * 0.001,
+        fields['import_daily'] = reading.reading['import_daily']
+        fields['export_total'] = (reading.reading['export_total'] or 0) * 0.001,
+        fields['export_daily'] = reading.reading['export_daily'],
+        fields['import_total_b'] = (reading.reading['import_total_b'] or 0) * 0.001,
+        fields['import_daily_b'] = reading.reading['import_daily_b'],
+        fields['extra_total'] = (reading.reading['extra_total'] or 0) * 0.001,
+        fields['extra_daily'] = reading.reading['extra_daily'],
+        fields['utilisation_total'] = (reading.reading['extra_total'] - reading.reading['import_total']) * 0.001,
+        fields['utilisation_daily'] = (reading.reading['extra_daily'] - reading.reading['import_daily']),
+
+        for number in self.times:
+            fields[f'import{number}'] = reading.reading[f'import{number}']
+            fields[f'export{number}'] = reading.reading[f'export{number}']
+            fields[f'import{number}_b'] = reading.reading[f'import{number}_b']
+            fields[f'export{number}_b'] = reading.reading[f'export{number}_b']
+            fields[f'utilisation{number}'] = (reading.reading[f'export{number}_b'] - reading.reading[f'export{number}'])
+
+        return fields[field]
+
+    async def get_readings(self, meter):
+        field_names = self.reading_fields().values()
+
+        query = """SELECT /*<select_names>*/*/*</select_names>*/ FROM readings_reading as reading
+                    WHERE reading.meter_id=%(meter_id)s 
+                    AND %(date_from)s <= reading.date AND reading.date <= %(date_to)s
+                    ORDER BY reading.date
+              ;""".replace('/*<select_names>*/*/*</select_names>*/', ','.join(field_names))
+
+        async with database.openmetrics(self.request.app) as connection:
+            async with connection.cursor() as cursor:
+                await cursor.execute(query, {
+                    'meter_id': meter.meter['id'],
+                    'date_from': self.get_date_from(),
+                    'date_to': self.get_date_to()
+                })
+                async for row in cursor:
+                    response_item = dict(zip(self.reading_fields(), row))
+                    if 'date' in response_item:
+                        response_item['date'] = response_item['date'].strftime("%Y-%m-%d")
+                    yield response_item
+
+    def reading_fields(self):
+        return {
+            'reading_id': 'reading.id',
+            'date': 'reading.date',
+            'import_total_b': 'reading.import_total_wh_b',
+            'import_daily_b': 'reading.import_total_b',
+            **{
+                f'import{number}_b': f'reading.import{number}_b'
+                for number in self.times
+            },
+            'extra_total': 'reading.export_total_wh_b',
+            'extra_daily': 'reading.export_total_b',
+            **{
+                f'export{number}_b': f'reading.export{number}_b'
+                for number in self.times
+            },
+            **{
+                f'extra{number}': f'reading.export{number}_b'
+                for number in self.times
+            },
+            'import_total': 'reading.import_total_wh',
+            'import_daily': 'reading.import_total',
+            **{
+                f'import{number}': f'reading.import{number}'
+                for number in self.times
+            },
+            'export_total': 'reading.export_total_wh',
+            'export_daily': 'reading.export_total',
+            **{
+                f'export{number}': f'reading.export{number}'
+                for number in self.times
+            },
+        }
+
+
+class Reading:
+    def __init__(self, reading, meter):
+        self.reading = reading
+        self.meter = meter
 
 
 @endpoints.post('/regular/csv_token')
 async def regular_csv_token(request):
-    request_data = await request.post()
-    is_superuser = request_data.get('is_superuser', '0') in ('true', '1')
-
-    if 'date_from' not in request_data:
-        return web.json_response({'error': "missing 'date_from'"})
-    if 'date_to' not in request_data:
-        return web.json_response({'error': "missing 'date_to'"})
-    if 'fields' not in request_data:
-        return web.json_response({'error': "missing 'fields'"})
-    if 'username' not in request_data:
-        if not is_superuser:
-            return web.json_response({'error': "missing 'username'"})
-
-    valid_fields = regular_field_names()
-    for field in request_data.getall('fields'):
-        if field not in valid_fields:
-            return web.json_response({'error': f"invalid name '{field}' in 'fields'"})
-
-    token_data = {
-        'date_from': request_data['date_from'],
-        'date_to': request_data['date_to'],
-        'fields': request_data.getall('fields'),
-    }
-    if 'username' in request_data and not is_superuser:
-        token_data['username'] = request_data['username']
-    if 'slugs' in request_data:
-        token_data['slugs'] = request_data.getall('slugs')
-
-    return web.json_response({
-        'token': tokens.create_request_token(config(request.app, 'SECRET_KEY'), regular_csv, **token_data)
-    })
+    regular = RegularExport(request)
+    return await regular.token(request, regular_csv)
 
 
-async def regular_iter(app, username, slugs, fields, date_from, date_to):
-    # Collect field names like in DB
-    field_names = regular_field_names()
-    select_names = [field_names[field] for field in fields]
-
-    select_query = f"""
-      SELECT /*<select_names>*/*/*</select_names>*/
-      FROM readings_reading as reading
-        INNER JOIN meters_meter as meter
-          ON reading.meter_id = meter.id
-      WHERE meter.id IN (
-        SELECT profile_meters.meter_id
-        FROM users_profile_meters as profile_meters
-          INNER JOIN meters_meter as meter
-          ON meter.id = profile_meters.meter_id
-        WHERE (
-            %(empty_slugs)s OR -- TRUE if no slugs 
-            meter.name IN %(slugs)s
-          )
-          AND (
-            %(all_users)s OR -- True if superuser
-            profile_meters.profile_id = (SELECT auth_user.id FROM auth_user WHERE auth_user.username = %(username)s)
-          )
-      )
-      AND %(date_from)s <= reading.date AND reading.date <= %(date_to)s
-      ORDER BY reading.date
-    ;
-    """.replace('/*<select_names>*/*/*</select_names>*/', ','.join(select_names))
-
-    async with database.openmetrics(app) as connection:
-        async with connection.cursor() as cursor:
-            await cursor.execute(select_query, {
-                'empty_slugs': not slugs,
-                # avoid sql syntax error: 'meter.name IN ()'
-                #                                     ^^^^^
-                'slugs': slugs if slugs else ('',),
-                'all_users': username is None,
-                'username': '' if username is None else username,
-                'date_from': date_from,
-                'date_to': date_to,
-            })
-            async for row in cursor:
-                response_item = dict(zip(fields, row))
-                if 'date' in response_item:
-                    response_item['date'] = response_item['date'].strftime("%Y-%m-%d")
-                yield response_item
-
-
-async def regular_csv_iter(app, username, slugs, fields, date_from, date_to):
-    csv_response = io.StringIO()
-    writer = csv.DictWriter(csv_response, fields)
-    writer.writeheader()
-
-    regular_export_iterator = regular_iter(
-        app=app,
-        username=username,
-        slugs=slugs,
-        fields=fields,
-        date_from=date_from,
-        date_to=date_to,
-    )
-    async for response_row in regular_export_iterator:
-        writer.writerow(response_row)
-        if csv_response.tell() > 4096*4096:
-            csv_response.seek(0)
-            yield csv_response.read()
-            csv_response.truncate()
-
-    if csv_response.tell() > 0:
-        csv_response.seek(0)
-        yield csv_response.read()
-
-
-@tokens.register_token_handler('regular/export')
+@tokens.register_token_handler('spc/export')
 async def regular_csv(request, request_args):
-    current_time = datetime.datetime.now().strftime('%Y%m%d%H%M')
-    filename = f"{request_args.get('username', '_SUPERUSER')}_{current_time}_csvexport.csv"
+    regular = RegularExport(request, request_args)
+    filename = f"{regular.get_username()}_{regular.current_time}_csvexport.csv"
 
     response = web.StreamResponse()
     response.headers['CONTENT-DISPOSITION'] = f'attachment; filename="{filename}"'
     await response.prepare(request)
 
-    csv_iterator = regular_csv_iter(
-        app=request.app,
-        username=request_args.get('username'),
-        slugs=request_args.get('slugs', []),
-        fields=request_args['fields'],
-        date_from=request_args['date_from'],
-        date_to=request_args['date_to'],
-    )
-
     try:
-        async for file_part in csv_iterator:
+        for file_part in await regular.export(request, request_args):
             await response.write(file_part.encode())
     finally:
         await response.write_eof()
     return response
+

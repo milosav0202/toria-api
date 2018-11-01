@@ -4,7 +4,7 @@ endpoints = web.RouteTableDef()
 
 
 class SPCExport(DefaultExporter):
-    def __init__(self, request, request_args):
+    def __init__(self, request, request_args=None):
         super().__init__()
         self.request = request
         self.request_args = request_args
@@ -166,8 +166,8 @@ class Reading:
 
 
 @endpoints.post('/spc/csv_token')
-async def spc_csv_token(request, request_args):
-    spc = SPCExport(request, request_args)
+async def spc_csv_token(request):
+    spc = SPCExport(request)
     return await spc.token(request, spc_csv)
 
 
