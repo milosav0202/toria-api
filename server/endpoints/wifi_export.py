@@ -14,11 +14,6 @@ def wifi_field_names():
         'mpan': 'meter.mpan',
         'location': 'meter.location',
         'date': 'wifi_reading.datetime',
-        'status': 'wifi_reading.status',
-        'power_output': 'wifi_reading.power_output',
-        'solar_generation': 'wifi_reading.solar_generation',
-        'solar_export': 'wifi_reading.solar_export',
-        'power_import': 'wifi_reading.power_import'
     }
 
 
@@ -54,7 +49,7 @@ async def wifi_csv_token(request):
     })
 
 
-async def wifi_iter(app, username, slugs, meter_type, fields, date_from, date_to):
+async def wifi_iter(app, username, slugs, fields, date_from, date_to):
     # Collect field names like in DB
     field_names = wifi_field_names()
     select_names = [field_names[field] for field in fields]
@@ -86,7 +81,6 @@ async def wifi_iter(app, username, slugs, meter_type, fields, date_from, date_to
     async with database.openmetrics(app) as connection:
         async with connection.cursor() as cursor:
             await cursor.execute(select_query, {
-                'meter_type': meter_type,
                 'empty_slugs': not slugs,
                 # avoid sql syntax error: 'meter.name IN ()'
                 #                                     ^^^^^
@@ -98,12 +92,13 @@ async def wifi_iter(app, username, slugs, meter_type, fields, date_from, date_to
             })
             async for row in cursor:
                 response_item = dict(zip(fields, row))
+                print(response_item)
                 if 'date' in response_item:
                     response_item['date'] = response_item['date'].strftime("%Y-%m-%d")
                 yield response_item
 
 
-async def wifi_csv_iter(app, username, slugs, meter_type, fields, date_from, date_to):
+async def wifi_csv_iter(app, username, slugs, fields, date_from, date_to):
     csv_response = io.StringIO()
     writer = csv.DictWriter(csv_response, fields)
     writer.writeheader()
@@ -112,7 +107,6 @@ async def wifi_csv_iter(app, username, slugs, meter_type, fields, date_from, dat
         app=app,
         username=username,
         slugs=slugs,
-        meter_type=meter_type,
         fields=fields,
         date_from=date_from,
         date_to=date_to,
@@ -142,7 +136,6 @@ async def wifi_csv(request, request_args):
         app=request.app,
         username=request_args.get('username'),
         slugs=request_args.get('slugs', []),
-        meter_type='EM',
         fields=request_args['fields'],
         date_from=request_args['date_from'],
         date_to=request_args['date_to'],
