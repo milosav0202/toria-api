@@ -18,6 +18,15 @@ class RegularExport(DefaultExporter):
         '2000', '2030', '2100', '2130', '2200', '2230', '2300', '2330'
     ]
 
+    times_utilisation = [
+        '0000', '0030', '0100', '0130', '0200', '0230', '0300', '0330',
+        '0400', '0430', '0500', '0530', '0600', '0630', '0700', '0730',
+        '0800', '0830', '0900', '0930', '1000', '1030', '1100', '1130',
+        '1200', '1230', '1300', '1330', '1400', '1430', '1500', '1530',
+        '1600', '1630', '1700', '1730', '1800', '1830', '1900', '1930',
+        '2000', '2030', '2100', '2130', '2200', '2230', '2300', '2330',
+    ]
+
     def fields(self):
         fields = [
             'serial',
@@ -25,24 +34,24 @@ class RegularExport(DefaultExporter):
             'mpan',
             'location',
             'date',
-            'import_total_b',
-            'import_daily_b',
+            'import_total',
+            'import_daily',
             'extra_total',
             'extra_daily',
             'utilisation_total',
             'utilisation_daily',
-            'import_total',
-            'import_daily',
             'export_total',
             'export_daily',
         ]
 
         for time in self.times:
-            fields.append('import'+time+"_b")
             fields.append('export'+time+"_b")
-            fields.append('utilisation' + time)
             fields.append('import' + time)
             fields.append('export' + time)
+
+        for time in self.times_utilisation:
+            fields.append('utilisation' + time)
+
         return fields
 
     def meter_type(self):
@@ -71,8 +80,6 @@ class RegularExport(DefaultExporter):
         fields['import_daily'] = reading.reading['import_daily']
         fields['export_total'] = (reading.reading['export_total'] or 0) * 0.001,
         fields['export_daily'] = reading.reading['export_daily'],
-        fields['import_total_b'] = (reading.reading['import_total_b'] or 0) * 0.001,
-        fields['import_daily_b'] = reading.reading['import_daily_b'],
         fields['extra_total'] = (reading.reading['extra_total'] or 0) * 0.001,
         fields['extra_daily'] = reading.reading['extra_daily'],
         fields['utilisation_total'] = (reading.reading['extra_total'] - reading.reading['import_total']) * 0.001,
@@ -81,8 +88,9 @@ class RegularExport(DefaultExporter):
         for number in self.times:
             fields[f'import{number}'] = reading.reading[f'import{number}']
             fields[f'export{number}'] = reading.reading[f'export{number}']
-            fields[f'import{number}_b'] = reading.reading[f'import{number}_b']
             fields[f'export{number}_b'] = reading.reading[f'export{number}_b']
+
+        for number in self.times_utilisation:
             fields[f'utilisation{number}'] = (reading.reading[f'export{number}_b'] - reading.reading[f'export{number}'])
 
         return fields[field]
@@ -113,30 +121,20 @@ class RegularExport(DefaultExporter):
         return {
             'reading_id': 'reading.id',
             'date': 'reading.date',
-            'import_total_b': 'reading.import_total_wh_b',
-            'import_daily_b': 'reading.import_total_b',
-            **{
-                f'import{number}_b': f'reading.import{number}_b'
-                for number in self.times
-            },
-            'extra_total': 'reading.export_total_wh_b',
-            'extra_daily': 'reading.export_total_b',
-            **{
-                f'export{number}_b': f'reading.export{number}_b'
-                for number in self.times
-            },
-            **{
-                f'extra{number}': f'reading.export{number}_b'
-                for number in self.times
-            },
             'import_total': 'reading.import_total_wh',
             'import_daily': 'reading.import_total',
+            'extra_total': 'reading.export_total_wh_b',
+            'extra_daily': 'reading.export_total_b',
+            'export_total': 'reading.export_total_wh',
+            'export_daily': 'reading.export_total',
             **{
                 f'import{number}': f'reading.import{number}'
                 for number in self.times
             },
-            'export_total': 'reading.export_total_wh',
-            'export_daily': 'reading.export_total',
+            **{
+                f'export{number}_b': f'reading.export{number}_b'
+                for number in self.times
+            },
             **{
                 f'export{number}': f'reading.export{number}'
                 for number in self.times
