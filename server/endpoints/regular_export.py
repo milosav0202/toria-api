@@ -73,17 +73,17 @@ class RegularExport(DefaultExporter):
 
         fields['serial'] = meter.meter['name']
         fields['reading_id'] = reading.reading['reading_id']
-        fields['mpan'] = meter.meter['mpan'] #TODO incorrect mpan
+        fields['mpan'] = str(meter.meter['mpan'])
         fields['location'] = meter.meter['location']
         fields['date'] = reading.reading['date']
-        fields['import_total'] = ((reading.reading['import_total'] or 0) * 0.001)[0],
+        fields['import_total'] = (reading.reading['import_total'] or 0) * 0.001
         fields['import_daily'] = reading.reading['import_daily']
-        fields['export_total'] = ((reading.reading['export_total'] or 0) * 0.001)[0],
-        fields['export_daily'] = reading.reading['export_daily'],
-        fields['extra_total'] = ((reading.reading['extra_total'] or 0) * 0.001)[0],
-        fields['extra_daily'] = reading.reading['extra_daily'],
-        fields['utilisation_total'] = abs(((reading.reading['extra_total'] - reading.reading['import_total']) * 0.001)[0]),
-        fields['utilisation_daily'] = (reading.reading['extra_daily'] - reading.reading['import_daily']),
+        fields['export_total'] = (reading.reading['export_total'] or 0) * 0.001
+        fields['export_daily'] = reading.reading['export_daily']
+        fields['extra_total'] = (reading.reading['extra_total'] or 0) * 0.001
+        fields['extra_daily'] = reading.reading['extra_daily']
+        fields['utilisation_total'] = abs((reading.reading['extra_total'] - reading.reading['import_total']) * 0.001)
+        fields['utilisation_daily'] = (reading.reading['extra_daily'] - reading.reading['import_daily'])
 
         for number in self.times:
             fields[f'import{number}'] = reading.reading[f'import{number}']
