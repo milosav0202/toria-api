@@ -53,7 +53,7 @@ def access_logging(async_handler):
     async def async_wrapper(request):
         async with request.app["local_db"].acquire() as conn:
             async with conn.cursor() as cursor:
-                response = await async_handler()
+                response = await async_handler(request)
 
                 request_log = """
                      INSERT INTO request_log (datetime, name) 
